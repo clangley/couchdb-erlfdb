@@ -2,7 +2,7 @@
 
 * Currently using OTP 23 and included enc escript did not work
     * Added scripts/install_enc.sh to pull erlang-native-compiler and apply patch
-    * Compile env and update local binary
+    * Compile enc and update local binary
 
 An Erlang Binding to FoundationDB
 ===
