@@ -752,7 +752,24 @@ erlfdb_database_set_option(ErlNifEnv* env, int argc, const ERL_NIF_TERM argv[])
         option = FDB_DB_OPTION_MACHINE_ID;
     } else if(IS_ATOM(argv[1], datacenter_id)) {
         option = FDB_DB_OPTION_DATACENTER_ID;
-    } else {
+    } else if(IS_ATOM(argv[1], read_your_writes_enable)) {
+        option = FDB_DB_OPTION_SNAPSHOT_RYW_ENABLE;
+    } else if(IS_ATOM(argv[1], read_your_writes_disable)) {
+        option = FDB_DB_OPTION_SNAPSHOT_RYW_DISABLE;
+    } else if(IS_ATOM(argv[1], transaction_logging_max_field_length)) {
+        option = FDB_DB_OPTION_TRANSACTION_LOGGING_MAX_FIELD_LENGTH;
+    } else if(IS_ATOM(argv[1], timeout)) {
+        option = FDB_DB_OPTION_TRANSACTION_TIMEOUT;
+    } else if(IS_ATOM(argv[1], retry_limit)) {
+        option = FDB_DB_OPTION_TRANSACTION_RETRY_LIMIT;
+    } else if(IS_ATOM(argv[1], max_retry_delay)) {
+        option = FDB_DB_OPTION_TRANSACTION_MAX_RETRY_DELAY;
+    } else if(IS_ATOM(argv[1], size_limit)) {
+        option = FDB_DB_OPTION_TRANSACTION_SIZE_LIMIT;
+    } else if(IS_ATOM(argv[1], causal_read_risky)) {
+        option = FDB_DB_OPTION_TRANSACTION_CAUSAL_READ_RISKY;
+    } else if(IS_ATOM(argv[1], include_port_in_address)) {
+        option = FDB_DB_OPTION_TRANSACTION_INCLUDE_PORT_IN_ADDRESS;
         return enif_make_badarg(env);
     }
 
@@ -818,6 +835,7 @@ erlfdb_database_create_transaction(
     t->txid = 0;
     t->read_only = true;
     t->writes_allowed = true;
+    t->has_watches = false;
 
     ret = enif_make_resource(env, t);
     enif_release_resource(t);
@@ -874,6 +892,8 @@ erlfdb_transaction_set_option(
         option = FDB_TR_OPTION_CAUSAL_READ_RISKY;
     } else if(IS_ATOM(argv[1], causal_read_disable)) {
         option = FDB_TR_OPTION_CAUSAL_READ_DISABLE;
+    } else if(IS_ATOM(argv[1], include_port_in_address)) {
+        option = FDB_TR_OPTION_INCLUDE_PORT_IN_ADDRESS;
     } else if(IS_ATOM(argv[1], next_write_no_write_conflict_range)) {
         option = FDB_TR_OPTION_NEXT_WRITE_NO_WRITE_CONFLICT_RANGE;
     } else if(IS_ATOM(argv[1], read_your_writes_disable)) {
@@ -900,6 +920,12 @@ erlfdb_transaction_set_option(
         option = FDB_TR_OPTION_DEBUG_RETRY_LOGGING;
     } else if(IS_ATOM(argv[1], transaction_logging_enable)) {
         option = FDB_TR_OPTION_TRANSACTION_LOGGING_ENABLE;
+    } else if(IS_ATOM(argv[1], debug_transaction_identifier)) {
+        option = FDB_TR_OPTION_DEBUG_TRANSACTION_IDENTIFIER;
+    } else if(IS_ATOM(argv[1], log_transaction)) {
+        option = FDB_TR_OPTION_LOG_TRANSACTION;
+    } else if(IS_ATOM(argv[1], transaction_logging_max_field_length)) {
+        option = FDB_TR_OPTION_TRANSACTION_LOGGING_MAX_FIELD_LENGTH;
     } else if(IS_ATOM(argv[1], timeout)) {
         option = FDB_TR_OPTION_TIMEOUT;
     } else if(IS_ATOM(argv[1], retry_limit)) {
@@ -918,6 +944,12 @@ erlfdb_transaction_set_option(
         option = FDB_TR_OPTION_READ_LOCK_AWARE;
     } else if(IS_ATOM(argv[1], size_limit)) {
         option = FDB_TR_OPTION_SIZE_LIMIT;
+    } else if(IS_ATOM(argv[1], use_provisional_proxies)) {
+        option = FDB_TR_OPTION_USE_PROVISIONAL_PROXIES;
+#if FDB_API_VERSION > 620
+    } else if(IS_ATOM(argv[1], report_conflicting_keys)) {
+        option = FDB_TR_OPTION_REPORT_CONFLICTING_KEYS;
+#endif
     } else {
         return enif_make_badarg(env);
     }
@@ -1659,6 +1691,13 @@ erlfdb_transaction_watch(
         return enif_make_badarg(env);
     }
 
+    // In order for the watches to fire the transaction must commit, even if it
+    // is a read-only transaction. So if writes are explicitly disallowed, also
+    // do not allow setting any watches.
+    if(!t->writes_allowed) {
+        return enif_raise_exception(env, ATOM_writes_not_allowed);
+    }
+
     if(!enif_inspect_binary(env, argv[1], &key)) {
         return enif_make_badarg(env);
     }
@@ -1669,6 +1708,7 @@ erlfdb_transaction_watch(
             key.size
         );
 
+    t->has_watches = true;
     return erlfdb_create_future(env, future, ErlFDB_FT_VOID);
 }
 
@@ -1748,6 +1788,7 @@ erlfdb_transaction_reset(
 
     t->txid = 0;
     t->read_only = true;
+    t->has_watches = false;
 
     return ATOM_ok;
 }
@@ -1967,6 +2008,42 @@ erlfdb_transaction_is_read_only(
 
 
 static ERL_NIF_TERM
+erlfdb_transaction_has_watches(
+        ErlNifEnv* env,
+        int argc,
+        const ERL_NIF_TERM argv[]
+    )
+{
+    ErlFDBSt* st = (ErlFDBSt*) enif_priv_data(env);
+    ErlFDBTransaction* t;
+    void* res;
+
+    if(st->lib_state != ErlFDB_CONNECTED) {
+        return enif_make_badarg(env);
+    }
+
+    if(argc != 1) {
+        return enif_make_badarg(env);
+    }
+
+    if(!enif_get_resource(env, argv[0], ErlFDBTransactionRes, &res)) {
+        return enif_make_badarg(env);
+    }
+    t = (ErlFDBTransaction*) res;
+
+    if(!erlfdb_transaction_is_owner(env, t)) {
+        return enif_make_badarg(env);
+    }
+
+    if(t->has_watches) {
+        return ATOM_true;
+    } else {
+        return ATOM_false;
+    }
+}
+
+
+static ERL_NIF_TERM
 erlfdb_transaction_get_writes_allowed(
         ErlNifEnv* env,
         int argc,
@@ -2111,6 +2188,7 @@ static ErlNifFunc funcs[] =
     NIF_FUNC(erlfdb_transaction_get_approximate_size, 1),
     NIF_FUNC(erlfdb_transaction_get_next_tx_id, 1),
     NIF_FUNC(erlfdb_transaction_is_read_only, 1),
+    NIF_FUNC(erlfdb_transaction_has_watches, 1),
     NIF_FUNC(erlfdb_transaction_get_writes_allowed, 1),
 
     NIF_FUNC(erlfdb_get_error, 1),

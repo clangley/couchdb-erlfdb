@@ -1,0 +1,12 @@
+--- rebar_utils.erl	2020-09-17 08:45:50.198099284 -0500
++++ rebar_utils_new.erl	2020-09-17 08:46:53.972533962 -0500
+@@ -43,7 +43,8 @@
+          delete_each/1
+         ]).
+ 
+--dialyzer({no_missing_calls, escript_foldl/3}).
++%% escript_foldl/3 not found, at least not in OTP 23
++%% -dialyzer({no_missing_calls, escript_foldl/3}).
+ 
+ -include("rebar.hrl").
+ 

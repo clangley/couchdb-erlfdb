@@ -1,6 +1,8 @@
 
 .eunit/
 .rebar/
+_build/
+.erlfdb/
 
 compile_commands.json
 erln8.config

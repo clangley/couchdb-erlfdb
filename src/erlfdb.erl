@@ -109,10 +109,14 @@
     % Transaction status
     get_next_tx_id/1,
     is_read_only/1,
+    has_watches/1,
     get_writes_allowed/1,
 
     % Locality
     get_addresses_for_key/2,
+
+    % Get conflict information
+    get_conflicting_keys/1,
 
     % Misc
     on_error/2,
@@ -123,6 +127,7 @@
 
 
 -define(IS_FUTURE, {erlfdb_future, _, _}).
+-define(IS_FOLD_FUTURE, {fold_info, _, _}).
 -define(IS_DB, {erlfdb_database, _}).
 -define(IS_TX, {erlfdb_transaction, _}).
 -define(IS_SS, {erlfdb_snapshot, _}).
@@ -156,7 +161,8 @@ create_transaction(?IS_DB = Db) ->
 
 transactional(?IS_DB = Db, UserFun) when is_function(UserFun, 1) ->
     clear_erlfdb_error(),
-    do_transaction(Db, UserFun);
+    Tx = create_transaction(Db),
+    do_transaction(Tx, UserFun);
 
 transactional(?IS_TX = Tx, UserFun) when is_function(UserFun, 1) ->
     UserFun(Tx);
@@ -188,12 +194,19 @@ reset(?IS_TX = Tx) ->
     ok = erlfdb_nif:transaction_reset(Tx).
 
 
+cancel(?IS_FOLD_FUTURE = FoldInfo) ->
+    cancel(FoldInfo, []);
+
 cancel(?IS_FUTURE = Future) ->
-    ok = erlfdb_nif:future_cancel(Future);
+    cancel(Future, []);
 
 cancel(?IS_TX = Tx) ->
     ok = erlfdb_nif:transaction_cancel(Tx).
 
+
+cancel(?IS_FOLD_FUTURE = FoldInfo, Options) ->
+    {fold_info, _St, Future} = FoldInfo,
+    cancel(Future, Options);
 
 cancel(?IS_FUTURE = Future, Options) ->
     ok = erlfdb_nif:future_cancel(Future),
@@ -380,7 +393,7 @@ fold_range_future(?IS_SS = SS, StartKey, EndKey, Options) ->
     fold_range_future(?GET_TX(SS), StartKey, EndKey, SSOptions).
 
 
-fold_range_wait(?IS_TX = Tx, {fold_info, _, _} = FI, Fun, Acc) ->
+fold_range_wait(?IS_TX = Tx, ?IS_FOLD_FUTURE = FI, Fun, Acc) ->
     fold_range_int(Tx, FI, fun(Rows, InnerAcc) ->
         lists:foldl(Fun, InnerAcc, Rows)
     end, Acc).
@@ -593,6 +606,13 @@ is_read_only(?IS_SS = SS) ->
     is_read_only(?GET_TX(SS)).
 
 
+has_watches(?IS_TX = Tx) ->
+    erlfdb_nif:transaction_has_watches(Tx);
+
+has_watches(?IS_SS = SS) ->
+    has_watches(?GET_TX(SS)).
+
+
 get_writes_allowed(?IS_TX = Tx) ->
     erlfdb_nif:transaction_get_writes_allowed(Tx);
 
@@ -610,6 +630,12 @@ get_addresses_for_key(?IS_TX = Tx, Key) ->
 
 get_addresses_for_key(?IS_SS = SS, Key) ->
     get_addresses_for_key(?GET_TX(SS), Key).
+
+
+get_conflicting_keys(?IS_TX = Tx) ->
+    StartKey = <<16#FF, 16#FF, "/transaction/conflicting_keys/">>,
+    EndKey = <<16#FF, 16#FF, "/transaction/conflicting_keys/", 16#FF>>,
+    get_range(Tx, StartKey, EndKey).
 
 
 on_error(?IS_TX = Tx, {erlfdb_error, ErrorCode}) ->
@@ -641,16 +667,18 @@ clear_erlfdb_error() ->
     put(?ERLFDB_ERROR, undefined).
 
 
-do_transaction(Db, UserFun) ->
-    Tx = create_transaction(Db),
+do_transaction(?IS_TX = Tx, UserFun) ->
     try
         Ret = UserFun(Tx),
-        wait(commit(Tx)),
+        case is_read_only(Tx) andalso not has_watches(Tx) of
+            true -> ok;
+            false -> wait(commit(Tx), [{timeout, infinity}])
+        end,
         Ret
     catch error:{erlfdb_error, Code} ->
         put(?ERLFDB_ERROR, Code),
-        wait(on_error(Tx, Code)),
-        do_transaction(Db, UserFun)
+        wait(on_error(Tx, Code), [{timeout, infinity}]),
+        do_transaction(Tx, UserFun)
     end.
 
 
@@ -663,7 +691,8 @@ fold_range_int(Tx, #fold_st{} = St, Fun, Acc) ->
     RangeFuture = fold_range_future_int(Tx, St),
     fold_range_int(Tx, RangeFuture, Fun, Acc);
 
-fold_range_int(Tx, {fold_info, St, Future}, Fun, Acc) ->
+fold_range_int(Tx, ?IS_FOLD_FUTURE = FI, Fun, Acc) ->
+    {fold_info, St, Future} = FI,
     #fold_st{
         start_key = StartKey,
         end_key = EndKey,
