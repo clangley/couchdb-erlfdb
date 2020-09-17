@@ -52,6 +52,7 @@
     transaction_add_conflict_range/4,
     transaction_get_next_tx_id/1,
     transaction_is_read_only/1,
+    transaction_has_watches/1,
     transaction_get_writes_allowed/1,
     transaction_get_approximate_size/1,
 
@@ -237,7 +238,8 @@ database_set_option(Database, Option) ->
         Value::option_value()
     ) -> ok.
 database_set_option({erlfdb_database, Db}, Opt, Val) ->
-    erlfdb_database_set_option(Db, Opt, Val).
+    BinVal = option_val_to_binary(Val),
+    erlfdb_database_set_option(Db, Opt, BinVal).
 
 
 -spec database_create_transaction(database()) ->
@@ -257,10 +259,7 @@ transaction_set_option(Transaction, Option) ->
         Value::option_value()
     ) -> ok.
 transaction_set_option({erlfdb_transaction, Tx}, Opt, Val) ->
-    BinVal = case Val of
-        B when is_binary(B) -> B;
-        I when is_integer(I) -> <<I:8/little-unsigned-integer-unit:8>>
-    end,
+    BinVal = option_val_to_binary(Val),
     erlfdb_transaction_set_option(Tx, Opt, BinVal).
 
 
@@ -430,6 +429,11 @@ transaction_is_read_only({erlfdb_transaction, Tx}) ->
     erlfdb_transaction_is_read_only(Tx).
 
 
+-spec transaction_has_watches(transaction()) -> true | false.
+transaction_has_watches({erlfdb_transaction, Tx}) ->
+    erlfdb_transaction_has_watches(Tx).
+
+
 -spec transaction_get_writes_allowed(transaction()) -> true | false.
 transaction_get_writes_allowed({erlfdb_transaction, Tx}) ->
     erlfdb_transaction_get_writes_allowed(Tx).
@@ -444,6 +448,14 @@ get_error(Error) ->
         boolean().
 error_predicate(Predicate, Error) ->
     erlfdb_error_predicate(Predicate, Error).
+
+
+-spec option_val_to_binary(binary() | integer()) -> binary().
+option_val_to_binary(Val) when is_binary(Val) ->
+    Val;
+
+option_val_to_binary(Val) when is_integer(Val) ->
+    <<Val:8/little-unsigned-integer-unit:8>>.
 
 
 init() ->
@@ -575,6 +587,7 @@ erlfdb_transaction_add_conflict_range(
     ) -> ?NOT_LOADED.
 erlfdb_transaction_get_next_tx_id(_Transaction) -> ?NOT_LOADED.
 erlfdb_transaction_is_read_only(_Transaction) -> ?NOT_LOADED.
+erlfdb_transaction_has_watches(_Transaction) -> ?NOT_LOADED.
 erlfdb_transaction_get_writes_allowed(_Transaction) -> ?NOT_LOADED.
 erlfdb_transaction_get_approximate_size(_Transaction) -> ?NOT_LOADED.
 
